@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Simulation des marées Terre-Lune</title>
+  <style>
+    :root {
+      --bg: #08131f;
+      --panel: rgba(8, 19, 31, 0.82);
+      --panel-border: rgba(255,255,255,0.12);
+      --text: #eef4ff;
+      --muted: #a8bfd8;
+      --earth: #3b82f6;
+      --earth-deep: #123a7a;
+      --water: #6ad7ff;
+      --moon: #d9dde5;
+      --grid: rgba(255,255,255,0.06);
+      --accent: #ffd166;
+      --accent2: #7ef29a;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: radial-gradient(circle at 20% 20%, #14304e 0%, #08131f 45%, #040a12 100%); color: var(--text); font-family: Inter, system-ui, sans-serif; }
+    body { overflow: hidden; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    .panel {
+      position: fixed; top: 16px; left: 16px; max-width: 400px;
+      background: var(--panel); border: 1px solid var(--panel-border); backdrop-filter: blur(8px);
+      border-radius: 14px; padding: 14px 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+    }
+    .panel h1 { margin: 0 0 8px; font-size: 20px; }
+    .panel p { margin: 6px 0; line-height: 1.45; color: var(--muted); font-size: 14px; }
+    .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; font-size: 13px; color: var(--muted); }
+    .legend span { display: inline-flex; align-items: center; gap: 7px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    .controls {
+      position: fixed; left: 16px; bottom: 16px; right: 16px; max-width: 560px;
+      background: var(--panel); border: 1px solid var(--panel-border); backdrop-filter: blur(8px);
+      border-radius: 14px; padding: 14px 16px;
+    }
+    .row { display: grid; grid-template-columns: 165px 1fr 56px; gap: 10px; align-items: center; margin: 8px 0; }
+    label { font-size: 14px; color: var(--text); }
+    input[type="range"] { width: 100%; }
+    .value { text-align: right; color: var(--accent); font-variant-numeric: tabular-nums; font-size: 13px; }
+    .note {
+      position: fixed; top: 16px; right: 16px; max-width: 330px;
+      background: rgba(255, 209, 102, 0.11); border: 1px solid rgba(255, 209, 102, 0.28);
+      color: #ffe7aa; border-radius: 14px; padding: 12px 14px; font-size: 13px; line-height: 1.45;
+    }
+    .kbd { padding: 1px 6px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.18); color: #fff; }
+    @media (max-width: 900px) {
+      .panel, .controls, .note { position: static; margin: 12px; max-width: none; }
+      body { overflow: auto; }
+      canvas { height: 68vh; }
+    }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h1>Simulation des marées Terre-Lune</h1>
+    <p>Déplacez la Lune avec la souris. Les points bleus représentent des gouttes d'eau en surface. Leur déplacement radial est calculé à partir du terme quadrupolaire du potentiel de marée, proportionnel à \(P_2(\cos\psi)=\tfrac12(3\cos^2\psi-1)\).</p>
+    <p>La Terre tourne en continu, ce qui fait défiler les gouttes sous le champ de marée. Un terme de rotation propre est ajouté pour montrer l'aplatissement équatorial, distinct du terme de marée lunaire.</p>
+    <div class="legend">
+      <span><i class="dot" style="background: var(--moon)"></i>Lune</span>
+      <span><i class="dot" style="background: var(--water)"></i>Gouttes d'eau</span>
+      <span><i class="dot" style="background: var(--accent)"></i>Axe Terre-Lune</span>
+      <span><i class="dot" style="background: var(--accent2)"></i>Bourrelet total</span>
+    </div>
+  </div>
+
+  <div class="note">
+    Modèle pédagogique 2D : il visualise la structure quadrupolaire des marées et une contribution rotationnelle simplifiée. Ce n'est pas un solveur hydrodynamique océanique réel.
+  </div>
+
+  <canvas id="c"></canvas>
+
+  <div class="controls">
+    <div class="row">
+      <label for="tideAmp">Amplitude de marée</label>
+      <input id="tideAmp" type="range" min="0" max="70" value="28" />
+      <div class="value" id="tideAmpVal"></div>
+    </div>
+    <div class="row">
+      <label for="rotAmp">Effet de rotation</label>
+      <input id="rotAmp" type="range" min="0" max="35" value="10" />
+      <div class="value" id="rotAmpVal"></div>
+    </div>
+    <div class="row">
+      <label for="spinRate">Vitesse de rotation</label>
+      <input id="spinRate" type="range" min="0" max="100" value="22" />
+      <div class="value" id="spinRateVal"></div>
+    </div>
+    <div class="row">
+      <label for="dropCount">Nombre de gouttes</label>
+      <input id="dropCount" type="range" min="80" max="720" value="360" />
+      <div class="value" id="dropCountVal"></div>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+
+    const ui = {
+      tideAmp: document.getElementById('tideAmp'),
+      rotAmp: document.getElementById('rotAmp'),
+      spinRate: document.getElementById('spinRate'),
+      dropCount: document.getElementById('dropCount'),
+      tideAmpVal: document.getElementById('tideAmpVal'),
+      rotAmpVal: document.getElementById('rotAmpVal'),
+      spinRateVal: document.getElementById('spinRateVal'),
+      dropCountVal: document.getElementById('dropCountVal')
+    };
+
+    const earth = { x: 0, y: 0, r: 0 };
+    const moon = { x: 0, y: 0, r: 18, dragging: false };
+
+    let W = 0, H = 0;
+    let spin = 0;
+    let lastT = performance.now();
+    let drops = [];
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      W = canvas.width = Math.floor(innerWidth * dpr);
+      H = canvas.height = Math.floor(innerHeight * dpr);
+      canvas.style.width = innerWidth + 'px';
+      canvas.style.height = innerHeight + 'px';
+      ctx.setTransform(1,0,0,1,0,0);
+      ctx.scale(dpr, dpr);
+      W = innerWidth;
+      H = innerHeight;
+      earth.x = W * 0.5;
+      earth.y = H * (W < 900 ? 0.48 : 0.56);
+      earth.r = Math.min(W, H) * 0.15;
+      if (!moon.initialized) {
+        moon.x = earth.x + earth.r * 2.6;
+        moon.y = earth.y - earth.r * 1.1;
+        moon.initialized = true;
+      }
+      rebuildDrops();
+    }
+
+    function rebuildDrops() {
+      const n = +ui.dropCount.value;
+      drops = Array.from({ length: n }, (_, i) => ({
+        phase0: (i / n) * Math.PI * 2,
+        jitter: (Math.random() - 0.5) * 0.012
+      }));
+    }
+
+    function P2(mu) {
+      return 0.5 * (3 * mu * mu - 1);
+    }
+
+    function clamp(v, a, b) {
+      return Math.max(a, Math.min(b, v));
+    }
+
+    function updateLabels() {
+      ui.tideAmpVal.textContent = ui.tideAmp.value;
+      ui.rotAmpVal.textContent = ui.rotAmp.value;
+      ui.spinRateVal.textContent = ui.spinRate.value;
+      ui.dropCountVal.textContent = ui.dropCount.value;
+    }
+
+    ['input','change'].forEach(evt => {
+      Object.values(ui).forEach(el => {
+        if (el instanceof HTMLInputElement) {
+          el.addEventListener(evt, () => {
+            updateLabels();
+            if (el === ui.dropCount) rebuildDrops();
+          });
+        }
+      });
+    });
+
+    function pointerPos(e) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top
+      };
+    }
+
+    canvas.addEventListener('pointerdown', e => {
+      const p = pointerPos(e);
+      const dx = p.x - moon.x, dy = p.y - moon.y;
+      if (Math.hypot(dx, dy) < 28) {
+        moon.dragging = true;
+        canvas.setPointerCapture(e.pointerId);
+      }
+    });
+
+    canvas.addEventListener('pointermove', e => {
+      if (!moon.dragging) return;
+      const p = pointerPos(e);
+      moon.x = p.x;
+      moon.y = p.y;
+    });
+
+    ['pointerup','pointercancel','pointerleave'].forEach(type => {
+      canvas.addEventListener(type, () => moon.dragging = false);
+    });
+
+    function drawBackground() {
+      ctx.clearRect(0, 0, W, H);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x <= W; x += 60) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+      }
+      for (let y = 0; y <= H; y += 60) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function drawEarthBase() {
+      const grad = ctx.createRadialGradient(earth.x - earth.r * 0.35, earth.y - earth.r * 0.35, earth.r * 0.1, earth.x, earth.y, earth.r);
+      grad.addColorStop(0, '#5ca4ff');
+      grad.addColorStop(0.55, '#2c72d8');
+      grad.addColorStop(1, '#123a7a');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(earth.x, earth.y, earth.r, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.11)';
+      ctx.lineWidth = 1;
+      for (let i = -2; i <= 2; i++) {
+        ctx.beginPath();
+        ctx.ellipse(earth.x, earth.y, earth.r * Math.cos(i * 0.22), earth.r, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      ctx.fillStyle = 'white';
+      ctx.font = '600 16px Inter, sans-serif';
+      ctx.fillText('Terre', earth.x - 20, earth.y + 5);
+      ctx.beginPath();
+      ctx.arc(earth.x, earth.y, 2.8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillText('O', earth.x + 10, earth.y - 10);
+    }
+
+    function drawMoon() {
+      const grad = ctx.createRadialGradient(moon.x - 5, moon.y - 5, 2, moon.x, moon.y, 18);
+      grad.addColorStop(0, '#ffffff');
+      grad.addColorStop(1, '#afb6c5');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(moon.x, moon.y, moon.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = '#eef4ff';
+      ctx.font = '600 15px Inter, sans-serif';
+      ctx.fillText('Lune', moon.x + 24, moon.y + 6);
+    }
+
+    function drawAxis() {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255, 209, 102, 0.75)';
+      ctx.setLineDash([8, 7]);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(earth.x, earth.y);
+      ctx.lineTo(moon.x, moon.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawBulgeOutline(moonAngle, tideAmp, rotAmp) {
+      ctx.save();
+      ctx.beginPath();
+      const eqAmp = rotAmp;
+      for (let i = 0; i <= 360; i++) {
+        const a = i / 360 * Math.PI * 2;
+        const mu = Math.cos(a - moonAngle);
+        const tide = tideAmp * P2(mu);
+        const rot = eqAmp * (-0.5) * Math.cos(2 * (a - (spin + Math.PI/2)));
+        const r = earth.r + tide + rot;
+        const x = earth.x + Math.cos(a) * r;
+        const y = earth.y + Math.sin(a) * r;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.strokeStyle = 'rgba(126, 242, 154, 0.95)';
+      ctx.lineWidth = 2.2;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawDrops(dt) {
+      const dx = moon.x - earth.x;
+      const dy = moon.y - earth.y;
+      const d = Math.max(Math.hypot(dx, dy), earth.r * 1.15);
+      const moonAngle = Math.atan2(dy, dx);
+      const tideBase = +ui.tideAmp.value;
+      const rotBase = +ui.rotAmp.value;
+      const spinRate = (+ui.spinRate.value / 100) * 0.9;
+      spin += dt * spinRate;
+
+      const distanceScale = Math.pow((earth.r * 2.8) / d, 3);
+      const tideAmp = tideBase * distanceScale;
+      const rotAmp = rotBase;
+
+      drawBulgeOutline(moonAngle, tideAmp, rotAmp);
+
+      ctx.save();
+      for (const drop of drops) {
+        const theta = drop.phase0 + spin;
+        const mu = Math.cos(theta - moonAngle);
+        const tide = tideAmp * P2(mu);
+        const rot = rotAmp * (-0.5) * Math.cos(2 * (theta - (spin + Math.PI/2)));
+        const r = earth.r + tide + rot;
+        const x = earth.x + Math.cos(theta) * r;
+        const y = earth.y + Math.sin(theta) * r;
+
+        const strength = clamp((tide + rot + 20) / 45, 0, 1);
+        const size = 1.3 + 1.8 * strength;
+
+        ctx.fillStyle = `rgba(106, 215, 255, ${0.38 + 0.62 * strength})`;
+        ctx.beginPath();
+        ctx.arc(x, y, size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+
+      const nearR = earth.r + tideAmp * P2(1) + rotAmp * (-0.5) * Math.cos(2 * (moonAngle - (spin + Math.PI/2)));
+      const farAngle = moonAngle + Math.PI;
+      const farR = earth.r + tideAmp * P2(-1) + rotAmp * (-0.5) * Math.cos(2 * (farAngle - (spin + Math.PI/2)));
+
+      ctx.fillStyle = '#ffd166';
+      ctx.beginPath();
+      ctx.arc(earth.x + Math.cos(moonAngle) * nearR, earth.y + Math.sin(moonAngle) * nearR, 4.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(earth.x + Math.cos(farAngle) * farR, earth.y + Math.sin(farAngle) * farR, 4.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#dce8ff';
+      ctx.font = '13px Inter, sans-serif';
+      ctx.fillText('P₂ maximum', earth.x + Math.cos(moonAngle) * (nearR + 14), earth.y + Math.sin(moonAngle) * (nearR + 14));
+    }
+
+    function drawFormula() {
+      const x = Math.max(18, W - 430);
+      const y = H - 112;
+      ctx.save();
+      ctx.fillStyle = 'rgba(8,19,31,0.74)';
+      roundRect(x, y, 395, 82, 12);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.stroke();
+      ctx.fillStyle = '#eef4ff';
+      ctx.font = '14px Inter, sans-serif';
+      ctx.fillText('Modèle affiché : déplacement radial ∝ A·P₂(cos ψ) + B·cos(2(θ-θrot))', x + 14, y + 28);
+      ctx.fillStyle = '#a8bfd8';
+      ctx.fillText('avec P₂(u) = 1/2 (3u² - 1), ψ = angle par rapport à l’axe Terre-Lune.', x + 14, y + 52);
+      ctx.fillText('A décroît comme d⁻³ quand la Lune s’éloigne ; B simule la rotation propre.', x + 14, y + 71);
+      ctx.restore();
+    }
+
+    function roundRect(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    function animate(t) {
+      const dt = Math.min((t - lastT) / 1000, 0.04);
+      lastT = t;
+
+      drawBackground();
+      drawAxis();
+      drawEarthBase();
+      drawDrops(dt);
+      drawMoon();
+      drawFormula();
+
+      requestAnimationFrame(animate);
+    }
+
+    updateLabels();
+    resize();
+    window.addEventListener('resize', resize);
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>
